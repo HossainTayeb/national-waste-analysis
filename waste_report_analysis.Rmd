@@ -1,0 +1,1068 @@
+---
+title: "National Waste Report 2022 - Data Analysis"
+subtitle: "Exploring Waste Generation, Recovery, and Fate Across Australian States"
+author: "Tayeb Hossain"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly         
+    highlight: tango      
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    code_folding: show
+    df_print: paged         
+    fig_width: 8
+    fig_height: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,     # hides the tidyverse/package load warnings
+  fig.align = "center"
+)
+```
+
+# Introduction
+This project analyses the National Waste Report 2022 dataset (Wastes.csv and Year_State_ID.csv), covering Australian waste generation, recovery, and fate across states from 2006–2021. The goal is to understand how waste composition, disposal outcomes, and environmental impact vary across categories and states, and what factors help explain long-term trends in the data. Before exploring these questions, the datasets were inspected for data quality issues, cleaned with justified wrangling decisions, and joined into a single analysis dataset.
+
+
+## STEP 1: SETUP & IMPORT
+```{r}
+# Load library
+library(tidyverse)
+
+# Import the two raw datasets
+wastes <- read_csv("data/Wastes.csv")
+year_state <- read_csv("data/Year_State_ID.csv")
+```
+
+
+## STEP 2: INITIAL DATA INSPECTION
+```{r}
+# --- Number of rows and columns ---
+dim(wastes)       # rows x columns in Wastes.csv
+dim(year_state)   # rows x columns in Year_State_ID.csv
+
+# --- Column names ---
+colnames(wastes)
+colnames(year_state)
+
+# --- Structure of each dataset (data types per column) ---
+str(wastes)
+str(year_state)
+
+# --- Preview first few rows ---
+head(wastes)
+tail(wastes)
+head(year_state)
+tail(year_state)
+
+# --- Structural summary (types + values) ---
+glimpse(wastes)
+glimpse(year_state)
+
+# --- Summary statistics (numeric ranges, NA counts) ---
+summary(wastes)
+summary(year_state)
+```
+
+## Comment: 
+- Wastes.csv (36,718 rows, 9 columns) and Year_State_ID.csv (130 rows, 4 columns) were imported. 
+- Initial inspection showed Tonnes and Case_ID stored as numeric, Year stored as character text in financial-year format (e.g. "2020-2021"), and State including a national aggregate value, "Australia", alongside individual states/territories.
+
+
+## STEP 3: DATA QUALITY INVESTIGATION - MISSING VALUES
+```{r}
+# Count of missing (NA) values per column in each dataset
+colSums(is.na(wastes))
+colSums(is.na(year_state))
+```
+
+## Comment:
+- Wastes.csv contained missing values in Case_ID/Year_State_ID (1), Category (3), Stream (1), Fate (1), Tonnes (15), Core_Non-core (15), and Description (1). Investigation showed all these traced back to a single invalid record ("Space debris"/"Defunct satellites", entirely blank) plus genuinely incomplete but otherwise valid records. 
+
+- Year_State_ID.csv had no missing values.
+
+
+
+```{r}
+# Inspect the specific rows where key identifiers are missing
+wastes %>% filter(is.na(Case_ID) | is.na(Year_State_ID)) %>% print(width = Inf)
+
+# Inspect rows missing each other column individually
+# Row(s) missing Category
+wastes %>% filter(is.na(Category)) %>% print(width = Inf)
+
+# Row(s) missing Stream
+wastes %>% filter(is.na(Stream)) %>% print(width = Inf)
+
+# Row(s) missing Fate
+wastes %>% filter(is.na(Fate)) %>% print(width = Inf)
+
+# Rows missing Tonnes
+wastes %>% filter(is.na(Tonnes)) %>% print(width = Inf)
+
+# Rows missing Core_Non-core
+wastes %>% filter(is.na(`Core_Non-core`)) %>% print(width = Inf)
+
+# Row missing Description
+wastes %>% filter(is.na(Description)) %>% print(width = Inf)
+
+# Check Year_State_ID.csv for missing values in its own columns
+year_state %>% filter(if_any(everything(), is.na)) %>% print(width = Inf)
+```
+
+
+## STEP 4: DUPLICATE CHECK
+```{r}
+# Check for fully duplicated rows across all columns
+sum(duplicated(wastes))
+
+# Check whether Case_ID has duplicates
+sum(duplicated(wastes$Case_ID, incomparables = NA))
+
+# Show the actual duplicated Case_ID rows for inspection
+wastes %>%
+  filter(Case_ID %in% Case_ID[duplicated(Case_ID) & !is.na(Case_ID)]) %>%
+  arrange(Case_ID) %>%
+  print(width = Inf)
+
+# Check Year_State_ID.csv for duplicate IDs
+sum(duplicated(year_state$ID))
+```
+
+## Comment:
+No fully duplicated rows were found, but 11 Case_ID values were duplicated. Inspection showed each duplicate pair/group held different Stream, Tonnes, and Description values — i.e. genuinely distinct waste records that happen to share an ID. Case_ID is therefore not a reliable unique identifier in this dataset; no rows were removed, since each represents real, distinct information.
+
+
+## STEP 5a: CATEGORICAL VARIABLE CHECK
+```{r}
+# Unique values in each categorical column to spot
+# inconsistent labels or invalid entries
+
+unique(wastes$Category)
+unique(wastes$Type)
+unique(wastes$Stream)
+unique(wastes$Fate)
+unique(wastes$`Core_Non-core`)
+
+# Count how many rows fall into each Category value
+wastes %>% count(Category, sort = TRUE)
+
+# For Stream and Fate
+wastes %>% count(Stream, sort = TRUE)
+wastes %>% count(Fate, sort = TRUE)
+
+# Check Core_Non-core values
+wastes %>% count(`Core_Non-core`, sort = TRUE)
+
+# Check the categorical columns in Year_State_ID.csv
+unique(year_state$State)
+unique(year_state$Year)
+```
+
+## Comment:
+Category contained 21 raw values due to inconsistent capitalisation (Organics/organics), inconsistent spelling (Plastics/Plastic), and duplicate labels for the same concepts. Two invalid entries were also identified: “Recycling” (a Fate value) and “Metals & Organics.” Stream similarly mixed abbreviations (C&D, C&I, MSW) with full names for two rows. Fate and Core_Non-core had no inconsistencies beyond the missing values already noted.
+
+
+## STEP 5b: FREQUENCY COUNTS + YEAR ANOMALY INVESTIGATION
+```{r}
+# Frequency counts for key categorical columns
+print(wastes %>% count(Category, sort = TRUE), n = Inf)
+print(wastes %>% count(Stream, sort = TRUE), n = Inf)
+print(wastes %>% count(Fate, sort = TRUE), n = Inf)
+print(wastes %>% count(`Core_Non-core`, sort = TRUE), n = Inf)
+
+# Investigate the malformed multi-year Year values in Year_State_ID.csv
+year_state %>%
+  filter(Year %in% c("2005-2007","2005-2008","2005-2009",
+                      "2005-2010","2005-2011","2005-2012","2005-2013")) %>%
+  arrange(Year, State) %>%
+  print(n = Inf)
+
+# Check whether these malformed years co-exist with normal years for the same States
+year_state %>%
+  count(State, Year) %>%
+  filter(State != "Australia") %>%
+  arrange(State, Year) %>%
+  print(n = Inf)
+```
+
+## Comment:
+Year_State_ID.csv contained 7 incorrect multi-year values. Based on the consistent pattern across all other states and the sequential year pattern, all 7 values were corrected to 2005-2006.
+
+
+## STEP 6: NUMERICAL VARIABLE CHECK
+```{r}
+# Distribution of Tonnes
+summary(wastes$Tonnes)
+
+# Check negative Tonnes values
+wastes %>% filter(Tonnes < 0) %>% print(width = Inf)
+
+# Check the extreme outliers - largest positive and most negative values
+wastes %>% arrange(Tonnes) %>% slice(1:5) %>% print(width = Inf)       
+wastes %>% arrange(desc(Tonnes)) %>% slice(1:5) %>% print(width = Inf) 
+
+# Check for near-zero negative values 
+wastes %>% filter(Tonnes < 0 & Tonnes > -1) %>% print(width = Inf)
+
+# Distribution of Economic_Growth
+summary(year_state$Economic_Growth)
+```
+
+## Comment:
+Tonnes contained one extreme outlier (-20,000,000; Case_ID 34666), which was corrected based on the Description text. Five near-zero negative values were also identified as floating-point rounding errors representing “-0.00 tonnes.” No other anomalies were found in Tonnes or Economic_Growth; large positive Tonnes values were verified as legitimate.
+
+
+## STEP 7: PARSE THE DESCRIPTION COLUMN
+```{r}
+# Extract the Environmental Impact Score
+wastes <- wastes %>%
+  mutate(
+    Impact_Score = as.numeric(str_extract(Description, "(?<=Score: )\\d+(?=/10)"))
+  )
+
+# Extract the feedback sentences that come AFTER the score
+wastes <- wastes %>%
+  mutate(
+    Feedback = str_trim(str_extract(Description, "(?<=/10\\.\\s).*"))
+  )
+
+# Extract the tonnage value written inside the Description text itself
+wastes <- wastes %>%
+  mutate(
+    Tonnes_from_text = as.numeric(str_extract(Description, "(?<=A total of )[^\\s]+(?= tonnes)"))
+  )
+
+
+# How many rows failed to get a score? 
+sum(is.na(wastes$Impact_Score))
+
+# Check the score range
+range(wastes$Impact_Score, na.rm = TRUE)
+
+# Preview the new columns
+wastes %>%
+  select(Case_ID, Tonnes, Tonnes_from_text, Impact_Score, Feedback) %>%
+  head(10) %>%
+  print(width = Inf)
+
+# Specifically check the corrupted row we found earlier (Case_ID 34666)
+wastes %>%
+  filter(Case_ID == 34666) %>%
+  select(Case_ID, Tonnes, Tonnes_from_text, Description) %>%
+  print(width = Inf)
+
+# Check the 14 rows with missing Tonnes
+wastes %>%
+  filter(is.na(Tonnes)) %>%
+  select(Case_ID, Tonnes, Tonnes_from_text, Description) %>%
+  print(width = Inf)
+```
+
+## Comment:
+The Description column follows a consistent format. Three variables were extracted: Impact_Score, Feedback, and Tonnes_from_text, which was used to verify or recover Tonnes values. Of the 15 missing Tonnes values, 11 were unrecoverable (“nan”), 3 were recovered from the text, and 1 belonged to an invalid junk row.
+
+
+## STEP 8: BUILD wastes_clean
+```{r}
+wastes_clean <- wastes %>%
+  # 1. Remove the invalid "Space debris" junk row
+  filter(!is.na(Case_ID)) %>%
+  
+  # 2. Fix the corrupted Tonnes value using the true figure from Description
+  mutate(
+    Tonnes = case_when(
+      Case_ID == 34666 ~ Tonnes_from_text,                     # corrupted value
+      is.na(Tonnes) & !is.nan(Tonnes_from_text) ~ Tonnes_from_text,
+      TRUE ~ Tonnes
+    )
+  ) %>%
+  
+  # 3. Round tiny floating-point-noise negative values to 0
+  mutate(
+    Tonnes = if_else(Tonnes < 0 & Tonnes > -1, 0, Tonnes)
+  ) %>%
+  
+  # 4. Standardize inconsistent Category labels
+  mutate(
+    Category = case_when(
+      Category %in% c("organics") ~ "Organics",
+      Category %in% c("Plastic") ~ "Plastics",
+      Category %in% c("Building & demolition materials") ~ "Building and demolition materials",
+      Category %in% c("HW", "Toxic wastes") ~ "Hazardous wastes",
+      TRUE ~ Category
+    )
+  ) %>%
+  
+  # 5. Standardize inconsistent Stream labels to abbreviations
+  mutate(
+    Stream = case_when(
+      Stream == "Construction and demolition waste" ~ "C&D",
+      Stream == "Municipal solid waste" ~ "MSW",
+      TRUE ~ Stream
+    )
+  ) %>%
+  
+  # 6. Impute missing Core_Non-core for the 14 "Hazardous wastes / Acids (B)" rows
+  mutate(
+    `Core_Non-core` = if_else(is.na(`Core_Non-core`), "Core waste", `Core_Non-core`)
+  )
+
+# --- Checks after cleaning ---
+dim(wastes_clean)
+sort(unique(wastes_clean$Category))
+sort(unique(wastes_clean$Stream))
+colSums(is.na(wastes_clean))
+summary(wastes_clean$Tonnes)
+```
+
+## Comment:
+Based on these findings, wastes_clean was created by removing the invalid “Space debris” row, correcting and recovering Tonnes values, rounding near-zero negatives to 0, standardising Category and Stream labels, and imputing the 14 missing Core_Non-core values as “Core waste.” All identified issues were resolved except the remaining Category "NAs" and invalid labels, which were addressed next.
+
+
+## STEP 9a: RESOLVE REMAINING CATEGORY ISSUES
+```{r}
+# Check other rows with the same Type for a Category to infer
+wastes_clean %>%
+  filter(Type %in% c("Other soil/sludges (other N)",
+                      "Paints, resins, inks, organic sludges (F)")) %>%
+  count(Type, Category)
+```
+
+
+```{r}
+# Inspect rows where Category = "Recycling" and their real Type/Fate
+wastes_clean %>%
+  filter(Category == "Recycling") %>%
+  select(Case_ID, Category, Type, Stream, Fate, Description) %>%
+  print(width = Inf)
+```
+
+
+```{r}
+# Inspect the single "Metals & Organics" row
+wastes_clean %>%
+  filter(Category == "Metals & Organics") %>%
+  select(Case_ID, Category, Type, Stream, Fate, Description) %>%
+  print(width = Inf)
+
+# Compare which Category does this Type normally belong to 
+wastes_clean %>%
+  filter(Type == (wastes_clean %>% filter(Category == "Metals & Organics") %>% pull(Type))) %>%
+  count(Type, Category)
+```
+
+
+```{r}
+# Confirm PVC's Category elsewhere in the dataset
+wastes_clean %>%
+  filter(Type == "Polyvinyl chloride (PVC) (3)") %>%
+  count(Type, Category)
+```
+
+## STEP 9b: APPLY CATEGORY FIXES
+```{r}
+wastes_clean <- wastes_clean %>%
+  mutate(
+    Category = case_when(
+      # Impute missing Category using Type lookup
+      is.na(Category) & Type == "Other soil/sludges (other N)" ~ "Hazardous wastes",
+      is.na(Category) & Type == "Paints, resins, inks, organic sludges (F)" ~ "Hazardous wastes",
+      
+      # Fix mislabeled Category values
+      Category == "Recycling" & Type == "Polyvinyl chloride (PVC) (3)" ~ "Plastics",
+      Category == "Metals & Organics" ~ "Organics",
+      
+      TRUE ~ Category
+    )
+  )
+
+# --- Final check ---
+sort(unique(wastes_clean$Category))
+colSums(is.na(wastes_clean))
+dim(wastes_clean)
+```
+
+## Comment:
+The 3 missing Category values were imputed using their Type: both associated Type values overwhelmingly mapped to "Hazardous wastes" elsewhere in the data (1471/1472 and 1470/1472 occurrences). The invalid Category value "Recycling" (Type: PVC) was corrected to "Plastics" (its Type's dominant category, 127/129 occurrences), and "Metals & Organics" (Type: Food organics) was corrected to "Organics" (1068/1069 occurrences). After these fixes, wastes_clean contains exactly 12 valid, distinct Category values with zero missing entries.
+
+
+## STEP 10: CLEAN year_state.csv
+```{r}
+# Fix the malformed multi-year Year values matching every other state's pattern
+year_state_clean <- year_state %>%
+  mutate(
+    Year = case_when(
+      Year %in% c("2005-2007", "2005-2008", "2005-2009",
+                  "2005-2010", "2005-2011", "2005-2012", "2005-2013") ~ "2005-2006",
+      TRUE ~ Year
+    )
+  )
+
+# Check for duplicate Year per State 
+year_state_clean %>%
+  count(State, Year) %>%
+  filter(n > 1)   
+
+sort(unique(year_state_clean$Year))
+
+# ============================================================
+# VALIDATE THE RELATIONSHIP BETWEEN THE TWO DATASETS
+# ============================================================
+
+# Check whether ID is unique in year_state_clean
+sum(duplicated(year_state_clean$ID))
+
+# Check whether every Year_State_ID in wastes_clean matches an ID in year_state_clean
+sum(!wastes_clean$Year_State_ID %in% year_state_clean$ID)
+
+# Check whether every ID in year_state_clean is used at least once in wastes_clean
+sum(!year_state_clean$ID %in% wastes_clean$Year_State_ID)
+```
+
+
+```{r}
+# Which Year State combinations have no matching waste records at all?
+year_state_clean %>%
+  filter(!ID %in% wastes_clean$Year_State_ID) %>%
+  arrange(State, Year) %>%
+  print(n = Inf)
+```
+
+## Comment:
+The 7 malformed Year values were corrected in year_state_clean and verified, with each state now having exactly 16 unique years. All Year_State_ID values in wastes_clean matched valid IDs, with no unmatched records. The 9 unmatched IDs in year_state_clean were due to data coverage gaps, not errors, so no further corrections were needed.
+
+
+## STEP 11: JOIN wastes_clean WITH year_state_clean
+```{r}
+# Left join: keep every waste record, attach its Year/State/Economic_Growth
+combined_data <- wastes_clean %>%
+  left_join(year_state_clean, by = c("Year_State_ID" = "ID"))
+
+# --- Checks ---
+dim(combined_data)                 
+colnames(combined_data)
+sum(is.na(combined_data$Year))     
+sum(is.na(combined_data$State))    
+
+# Preview
+combined_data %>%
+  select(Case_ID, Category, Tonnes, Year, State, Economic_Growth) %>%
+  head(10) %>%
+  print(width = Inf)
+```
+
+## Comment:
+wastes_clean was left-joined with year_state_clean using Year_State_ID = ID, creating combined_data with 36,717 rows, matching wastes_clean. The one-to-one join was successful, with no missing Year or State values.
+
+
+
+# How Many Distinct Waste Categories Exist in the Dataset?
+
+```{r}
+# ============================================================
+# Unique Category values
+# ============================================================
+
+# --- Raw / uncleaned count ---
+raw_category_count <- n_distinct(wastes$Category)
+raw_category_count
+
+sort(unique(wastes$Category))
+
+# --- Cleaned count ---
+clean_category_count <- n_distinct(wastes_clean$Category)
+clean_category_count
+
+sort(unique(wastes_clean$Category))
+```
+
+## Comment:
+The raw Wastes.csv contains 21 distinct Category values, but this count is inflated by inconsistent labels, duplicate labels for the same waste type, invalid entries, a junk record, and 3 missing values. After cleaning and standardizing the data, wastes_clean contains 12 genuine, distinct waste categories.
+
+
+
+# How Common Are Negative Environmental Impact Assessments?
+
+```{r}
+# ============================================================
+# Negative feedback comments with Impact Score 2 or 3
+# ============================================================
+
+# First, inspect Feedback text for scores of 2 and 3 to 
+# understand negative wording in this dataset.
+combined_data %>%
+  filter(Impact_Score %in% c(2, 3)) %>%
+  distinct(Impact_Score, Feedback) %>%
+  arrange(Impact_Score) %>%
+  print(n = Inf)
+```
+
+
+```{r}
+# Count how many rows have a negative feedback comment 
+negative_feedback_count <- combined_data %>%
+  filter(Impact_Score %in% c(2, 3)) %>%
+  nrow()
+
+negative_feedback_count
+```
+
+## Comment:
+The Description column was parsed to extract Impact_Score and Feedback as separate variables. Reviewing the feedback for scores of 2 and 3 confirmed consistently negative language. Filtering combined_data for these scores gives a total of 6,312 negative feedback comments.
+
+
+
+# Waste Source Composition by Category
+
+## Comment:
+"Waste sources" here refers to the Stream column (MSW / C&I / C&D — municipal, commercial & industrial, construction & demolition). For each Category, we need the fraction of total tonnes contributed by each Stream.
+
+```{r}
+# ============================================================
+# Fraction of waste tonnes by Stream, for each Category
+# ============================================================
+
+# Step 1: Total tonnes per Category x Stream combination
+category_stream_tonnes <- combined_data %>%
+  filter(!is.na(Tonnes)) %>%          
+  group_by(Category, Stream) %>%
+  summarise(Total_Tonnes = sum(Tonnes), .groups = "drop")
+
+# Step 2: Convert to a FRACTION within each Category
+category_stream_fraction <- category_stream_tonnes %>%
+  group_by(Category) %>%
+  mutate(Fraction = Total_Tonnes / sum(Total_Tonnes)) %>%
+  ungroup()
+
+# Check - fractions within each Category should sum to 1
+category_stream_fraction %>%
+  group_by(Category) %>%
+  summarise(check_sum = sum(Fraction))
+
+# View the result
+print(category_stream_fraction, n = Inf)
+```
+
+
+```{r}
+# Step 3: Visualize - stacked bar chart showing the Stream fraction
+# breakdown within each Category
+ggplot(category_stream_fraction, aes(x = Category, y = Fraction, fill = Stream)) +
+  geom_col(position = "fill") +
+  coord_flip() +
+  labs(
+    title = "Fig 1: Fraction of Waste Tonnes by Source\nfor Each Category",
+    x = "Waste Category",
+    y = "Fraction of Total Tonnes",
+    fill = "Waste Source (Stream)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 13))
+```
+
+## Comment:
+For each Category, total waste tonnes were aggregated by Stream (source) and converted into a fraction of the Category's total. 
+
+- Figure 1 shows these fractions using a stacked bar chart. The results show clear source specialization: Biosolids and Ash come entirely from commercial & industrial (C&I) sources, Building and demolition materials are dominated by construction & demolition (C&D, ~96%), and Glass mainly comes from municipal solid waste (MSW, ~78%). Plastics and Metals show a more even split across the three sources.
+
+
+
+# State-Level Waste Totals: Summary Statistics
+
+```{r}
+# ============================================================
+# Total waste tonnes per Year/State -> temp,
+# then Min/Max/Mean per State using a SINGLE R function
+# ============================================================
+
+# Step 1: Compute total waste tonnes for each Year x State combination
+temp <- combined_data %>%
+  filter(!is.na(Tonnes)) %>%
+  group_by(Year, State) %>%
+  summarise(Total_Tonnes = sum(Tonnes), .groups = "drop")
+
+temp
+
+# Step 2: Compute Min, Max, Mean of Total_Tonnes for EACH STATE
+temp %>%
+  group_by(State) %>%
+  summarise(stats = list(summary(Total_Tonnes))) %>%
+  { for (i in seq_len(nrow(.))) {
+      cat("\nState:", .$State[i], "\n")
+      print(.$stats[[i]])
+    }
+  }
+```
+
+## Comment:
+Year and State were already available in combined_data through Year_State_ID. Total waste tonnes were aggregated for each Year–State combination and stored in temp. The summary() function was then applied to Total_Tonnes for each state to obtain the Min, Max, and Mean values, along with the quartiles and median. NSW and Victoria had the highest total waste tonnages, while “Australia” had zero across all statistics because no waste records were directly attributed to this aggregate entry.
+
+
+
+# Yearly Trend: Food Organics Waste by State
+
+```{r}
+# ============================================================
+# Convert Year-Year to a single Year value,
+# then chart the yearly trend of Food Organics tonnes per state
+# ============================================================
+
+# Convert "YYYY-YYYY" financial year format into a single numeric Year
+analysis_data <- combined_data %>%
+  mutate(
+    Year_numeric = as.numeric(str_sub(Year, 1, 4))
+  )
+
+# Confirm the conversion worked correctly
+analysis_data %>%
+  distinct(Year, Year_numeric) %>%
+  arrange(Year_numeric) %>%
+  print(n = Inf)
+
+# Filter for Food organics (Type = "Food organics"), aggregate tonnes 
+# by Year and State, excluding the "Australia" national aggregate row
+food_organics_trend <- analysis_data %>%
+  filter(Type == "Food organics", State != "Australia", !is.na(Tonnes)) %>%
+  group_by(Year_numeric, State) %>%
+  summarise(Total_Tonnes = sum(Tonnes), .groups = "drop")
+
+food_organics_trend
+
+# Visualize: yearly trend line, one line per state
+ggplot(food_organics_trend, aes(x = Year_numeric, y = Total_Tonnes, color = State)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  labs(
+    title = "Fig 2: Yearly Trend of Food Organics Waste Tonnes by State",
+    x = "Year (start of financial year)",
+    y = "Total Tonnes",
+    color = "State"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+# Check whether 2007 has any Food organics records across states
+analysis_data %>%
+  filter(Type == "Food organics", Year_numeric == 2007) %>%
+  nrow()
+```
+
+## Comment:
+The Year column (financial-year format, “2020-2021”) was converted to a single numeric year using the starting year of each financial period (Year_numeric), providing a continuous scale for trend analysis. Food organics tonnes were then aggregated by year and state and visualized as a line chart in Fig. 2. NSW and Victoria consistently show the largest volumes of food organics waste, while WA shows a sharp drop in reported tonnage in 2018 before recovering the following year.
+
+
+
+# Which Waste Types Dominate Recycling, Energy Recovery, and Growth?
+
+```{r}
+# ============================================================
+# Most recycled waste Type (with year)
+# ============================================================
+
+most_recycled <- analysis_data %>%
+  filter(Fate == "Recycling", !is.na(Tonnes)) %>%
+  group_by(Type, Year_numeric) %>%
+  summarise(Total_Tonnes = sum(Tonnes), .groups = "drop") %>%
+  arrange(desc(Total_Tonnes)) %>%
+  slice(1)
+
+most_recycled
+```
+
+## Comment:
+Using analysis_data, waste tonnes were filtered for Fate = “Recycling” and totalled by Type and Year. The highest recorded value was Bricks, concrete and pavers in 2020, with approximately 10.48 million tonnes recycled.
+
+
+```{r}
+# ============================================================
+# Most energy-recovered waste Type (with year)
+# ============================================================
+
+most_energy_recovered <- analysis_data %>%
+  filter(Fate == "Energy recovery", !is.na(Tonnes)) %>%
+  group_by(Type, Year_numeric) %>%
+  summarise(Total_Tonnes = sum(Tonnes), .groups = "drop") %>%
+  arrange(desc(Total_Tonnes)) %>%
+  slice(1)
+
+most_energy_recovered
+```
+
+## Comment:
+For Fate = “Energy recovery”, tonnes were totalled by Type and Year. Food organics had the highest recorded energy recovery in 2015, at approximately 1.14 million tonnes.
+
+
+```{r}
+# ============================================================
+# Most increased waste Type over years
+# ============================================================
+
+# Step 1: total tonnes per Type per year
+type_yearly_totals <- analysis_data %>%
+  filter(!is.na(Tonnes)) %>%
+  group_by(Type, Year_numeric) %>%
+  summarise(Total_Tonnes = sum(Tonnes), .groups = "drop")
+
+# Step 2: for each Type, get its FIRST and LAST recorded year's tonnage
+type_first_last <- type_yearly_totals %>%
+  group_by(Type) %>%
+  summarise(
+    First_Year = min(Year_numeric),
+    Last_Year = max(Year_numeric),
+    First_Tonnes = Total_Tonnes[which.min(Year_numeric)],
+    Last_Tonnes = Total_Tonnes[which.max(Year_numeric)],
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Increase = Last_Tonnes - First_Tonnes,
+    Pct_Increase = (Last_Tonnes - First_Tonnes) / First_Tonnes * 100
+  )
+
+# Step 3: the Type with the largest ABSOLUTE increase
+most_increased_absolute <- type_first_last %>%
+  arrange(desc(Increase)) %>%
+  slice(1)
+
+most_increased_absolute
+
+# For comparison: the Type with the largest PERCENTAGE increase
+most_increased_pct <- type_first_last %>%
+  arrange(desc(Pct_Increase)) %>%
+  slice(1)
+
+most_increased_pct
+```
+
+## Comment:
+To identify the largest increase over time, the earliest and latest recorded tonnages for each Type were compared. Bricks, concrete and pavers had the largest absolute increase, rising from approximately 2.13 million tonnes in 2006 to 10.48 million tonnes in 2020, an increase of 8.35 million tonnes. Absolute increase was used instead of percentage change because some Types started at 0 tonnes, making percentage increases undefined or misleading.
+
+
+
+# What Factors Influence Environmental Impact Scores?
+
+```{r}
+# ============================================================
+# Factors influencing Environmental Impact Score
+# ============================================================
+
+# --- Factor 1: Does Impact_Score vary by Fate? ---
+analysis_data %>%
+  group_by(Fate) %>%
+  summarise(
+    Mean_Score = mean(Impact_Score, na.rm = TRUE),
+    Median_Score = median(Impact_Score, na.rm = TRUE),
+    n = n()
+  ) %>%
+  arrange(desc(Mean_Score))
+```
+
+## Comment:
+- Fate: Impact_Score varies across waste management methods. Recycling has the highest mean score (6.18), while Disposal has the lowest (4.75). This suggests that how waste is managed is an important factor associated with the Environmental Impact Score, with recycling receiving higher scores than disposal.
+
+
+```{r}
+# --- Factor 2: Does Impact_Score vary by Category? ---
+analysis_data %>%
+  group_by(Category) %>%
+  summarise(
+    Mean_Score = mean(Impact_Score, na.rm = TRUE),
+    n = n()
+  ) %>%
+  arrange(desc(Mean_Score))
+```
+
+## Comment:
+- Category: Impact_Score also varies across waste categories. Aluminium, Metals, and Glass have the highest mean scores (6.4–8.0), while Organics and Hazardous wastes have the lowest (4.9–5.3). This suggests that the type of waste is also associated with differences in Environmental Impact Score.
+
+
+```{r}
+# --- Factor 3: Correlation between Tonnes and Impact_Score ---
+cor_tonnes <- cor.test(analysis_data$Tonnes, analysis_data$Impact_Score,
+                        method = "pearson", use = "complete.obs")
+
+cat("Correlation (Tonnes vs Impact Score):", round(cor_tonnes$estimate, 3), "\n")
+cat("p-value:", format.pval(cor_tonnes$p.value, digits = 3), "\n")
+```
+
+## Comment:
+- Tonnes: The Pearson correlation between waste quantity (Tonnes) and Impact_Score is r = 0.071 (p < 0.001). Although statistically significant, the correlation is very weak, indicating that the amount of waste has little practical relationship with the Environmental Impact Score.
+
+
+
+```{r}
+# Visual for Factor 3: Tonnes vs Impact_Score (log-scale, since Tonnes is extremely skewed)
+ggplot(analysis_data %>% filter(!is.na(Tonnes), !is.na(Impact_Score)),
+       aes(x = Tonnes + 1, y = Impact_Score)) +
+  geom_jitter(alpha = 0.05, width = 0, height = 0.15, color = "steelblue") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  scale_x_log10(labels = scales::comma) +
+  labs(
+    title = "Fig 3: Environmental Impact Score vs Waste Tonnes",
+    subtitle = paste0("Pearson r = ", round(cor_tonnes$estimate, 3), 
+                       " (p ", format.pval(cor_tonnes$p.value, digits = 2), ")"),
+    x = "Tonnes (log scale)",
+    y = "Environmental Impact Score"
+  ) +
+  theme_minimal()
+```
+
+## Comment:
+- Fig. 3 shows the relationship between waste quantity and Environmental Impact Score on a log-scaled x-axis. The scores remain clustered across a wide range of waste quantities, with the fitted line showing only a slight positive trend. This supports the correlation result (r = 0.071), indicating that waste quantity has little practical influence on the Impact_Score.
+
+
+
+```{r}
+# --- Factor 4: Correlation between Economic_Growth and Impact_Score ---
+cor_growth <- cor.test(analysis_data$Economic_Growth, analysis_data$Impact_Score,
+                        method = "pearson", use = "complete.obs")
+
+cat("Correlation (Economic Growth vs Impact Score):", round(cor_growth$estimate, 3), "\n")
+cat("p-value:", format.pval(cor_growth$p.value, digits = 3), "\n")
+```
+
+## Comment:
+- Economic Growth: The Pearson correlation between Economic_Growth and Impact_Score is r = -0.022 (p < 0.001). Although statistically significant, the correlation is extremely weak, indicating that economic growth has little practical relationship with the Environmental Impact Score.
+
+
+
+```{r}
+# Visual for Factor 4: Economic_Growth vs Impact_Score
+ggplot(analysis_data %>% filter(!is.na(Economic_Growth), !is.na(Impact_Score)),
+       aes(x = Economic_Growth, y = Impact_Score)) +
+  geom_jitter(alpha = 0.05, width = 0, height = 0.15, color = "darkgreen") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(
+    title = "Fig 4: Environmental Impact Score vs Economic Growth",
+    subtitle = paste0("Pearson r = ", round(cor_growth$estimate, 3),
+                       " (p ", format.pval(cor_growth$p.value, digits = 2), ")"),
+    x = "Economic Growth (%)",
+    y = "Environmental Impact Score"
+  ) +
+  theme_minimal()
+```
+
+## Comment:
+- Fig. 4 shows the relationship between Economic_Growth and Environmental Impact Score. The data points are widely dispersed, and the fitted line is almost flat, indicating little to no clear relationship between economic growth and Impact_Score. This is consistent with the very weak Pearson correlation (r = -0.022).
+
+## Conclusion:
+Of the four factors examined, Fate shows the strongest and most interpretable relationship with Environmental Impact Score, followed by Category. Tonnes and Economic_Growth, while statistically significant given the large sample size, have effect sizes too small to be practically meaningful. This suggests the Impact_Score is driven primarily by what happens to the waste (its disposal method) rather than how much waste there is or the broader economic climate.
+
+
+
+# Tyre Disposal Patterns: A State Investment Case Study
+
+```{r}
+# ============================================================
+# Tyre disposal size variation & frequency by state
+# ============================================================
+
+# Filter for tyre waste (Type contains "Tyres")
+tyre_data <- analysis_data %>%
+  filter(str_detect(Type, "Tyres"), !is.na(Tonnes))
+
+# Check the range of Tonnes for tyres, to choose sensible bin boundaries
+summary(tyre_data$Tonnes)
+
+# Create Tonnes_range bins (at least 4 ranges)
+tyre_data <- tyre_data %>%
+  mutate(
+    Tonnes_range = cut(
+      Tonnes,
+      breaks = c(-Inf, 0, 10, 100, 1000, Inf),
+      labels = c("0", "0-10", "10-100", "100-1000", "1000+"),
+      right = TRUE
+    )
+  )
+
+# Check how the bins distributed
+tyre_data %>% count(Tonnes_range)
+```
+
+
+```{r}
+# Look at the distribution of NON-ZERO tyre tonnage specifically,
+tyre_data %>%
+  filter(Tonnes > 0) %>%
+  pull(Tonnes) %>%
+  summary()
+
+# How many tyre records are there in total, and how many are zero vs non-zero?
+nrow(tyre_data)
+sum(tyre_data$Tonnes == 0)
+sum(tyre_data$Tonnes > 0)
+
+# Look at quantiles of the non-zero values to pick sensible bin cutpoints
+tyre_data %>%
+  filter(Tonnes > 0) %>%
+  pull(Tonnes) %>%
+  quantile(probs = c(0.25, 0.5, 0.75, 0.9, 0.95, 1))
+```
+
+
+```{r}
+# ============================================================
+# Build meaningful Tonnes_range bins
+# ============================================================
+
+# Bin boundaries chosen based on the actual quantiles of non-zero tyre tonnage:
+# - "0" isolates the no-disposal-recorded cases (75% of records)
+tyre_data <- tyre_data %>%
+  mutate(
+    Tonnes_range = cut(
+      Tonnes,
+      breaks = c(-Inf, 0, 2000, 10000, 30000, Inf),
+      labels = c("0 (none)", "1-2,000", "2,001-10,000", "10,001-30,000", "30,000+"),
+      right = TRUE
+    )
+  )
+
+# Check the new bin distribution
+tyre_data %>% count(Tonnes_range)
+
+# Frequency of each Tonnes_range PER STATE
+tyre_state_summary <- tyre_data %>%
+  count(State, Tonnes_range)
+
+print(tyre_state_summary, n = Inf)
+```
+
+## Comment:
+Tyre records were identified by filtering Type values containing “Tyres”. The data showed that 1,180 of the 1,572 records had zero tonnes, while the 392 non-zero records ranged from 86 to 70,411 tonnes. Based on the distribution of the non-zero values, five Tonnes_range categories were created, with “0 (none)” separated from the actual disposal ranges. This allowed genuine disposal activity to be analysed without the large number of zero-tonnage records obscuring the results.
+
+
+
+```{r}
+# ============================================================
+# Two focused visuals - size variation 
+# and frequency of MEANINGFUL disposal activity
+# ============================================================
+
+# --- Visual A: Disposal SIZE VARIATION per state (boxplot, non-zero only) ---
+ggplot(tyre_data %>% filter(Tonnes > 0), aes(x = State, y = Tonnes)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Fig 5: Tyre Disposal Size Variation by State",
+    subtitle = "Distribution of non-zero disposal tonnage",
+    x = "State",
+    y = "Tonnes per Disposal Record"
+  ) +
+  theme_minimal()
+
+# --- Visual B: Disposal FREQUENCY by size range per state (excluding "0 (none)") ---
+tyre_state_summary_nonzero <- tyre_data %>%
+  filter(Tonnes > 0) %>%
+  count(State, Tonnes_range)
+
+ggplot(tyre_state_summary_nonzero, aes(x = State, y = n, fill = Tonnes_range)) +
+  geom_col(position = "stack") +
+  labs(
+    title = "Fig 6: Frequency of Tyre Disposal Events by Size Range and State",
+    subtitle = "Zero-tonnage records excluded to highlight real disposal activity",
+    x = "State",
+    y = "Number of Disposal Records",
+    fill = "Tonnes Range"
+  ) +
+  theme_minimal()
+```
+
+## Comment:
+- Fig. 5 shows the variation in non-zero tyre disposal tonnage across states using boxplots. NSW, Qld, and Vic show larger disposal amounts and greater variation, including records approaching 70,000 tonnes. In comparison, ACT, NT, and Tas generally show smaller disposal amounts and less variation.
+
+- Fig. 6 shows the frequency of non-zero tyre disposal records across the different size ranges for each state. Vic and Qld have relatively frequent large disposal events in the 10,001–30,000 tonne range, while NSW and Vic have the most frequent events above 30,000 tonnes. This indicates that tyre disposal patterns differ substantially between states in both size and frequency.
+
+Overall, the results show substantial differences in tyre disposal size and frequency between states. NSW, Vic, and Qld have the largest and most variable disposal events, while ACT, NT, and Tas generally have smaller disposal amounts.
+
+## Recommendation: 
+NSW, Vic, and Qld are the strongest candidates for large-scale tyre processing investment as they combine both high disposal volumes and high frequency of large-scale events, indicating consistent demand for high-capacity processing infrastructure.
+
+
+
+# What's Driving the Growth in Construction & Demolition Waste?
+
+```{r}
+# ============================================================
+# Yearly trend of total C&D waste tonnes
+# ============================================================
+
+cd_yearly_trend <- analysis_data %>%
+  filter(Stream == "C&D", !is.na(Tonnes)) %>%
+  group_by(Year_numeric) %>%
+  summarise(Total_Tonnes = sum(Tonnes), .groups = "drop")
+
+cd_yearly_trend
+
+ggplot(cd_yearly_trend, aes(x = Year_numeric, y = Total_Tonnes)) +
+  geom_line(color = "darkorange", linewidth = 1) +
+  geom_point(color = "darkorange", size = 2) +
+  labs(
+    title = "Fig 7: Yearly Trend of Total C&D Waste Tonnes",
+    x = "Year",
+    y = "Total Tonnes"
+  ) +
+  theme_minimal()
+
+# Also check: whether Economic_Growth correlates with total C&D tonnes per year
+cd_growth_check <- analysis_data %>%
+  filter(Stream == "C&D", !is.na(Tonnes)) %>%
+  group_by(Year_numeric) %>%
+  summarise(
+    Total_Tonnes = sum(Tonnes),
+    Avg_Economic_Growth = mean(Economic_Growth, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cd_growth_check
+
+cor.test(cd_growth_check$Total_Tonnes, cd_growth_check$Avg_Economic_Growth)
+```
+
+## Comment:
+- Total C&D waste tonnes were aggregated by year using analysis_data. In fig 7, the yearly totals were relatively volatile from 2006–2012, ranging from approximately 1.3 to 5.9 million tonnes. From 2013 onwards, the trend increased substantially and consistently, reaching approximately 25.3 million tonnes in 2020. This represents a major increase compared with the earlier years, although the sharp changes in the early period suggest that factors other than construction activity may also have influenced the reported totals.
+
+
+
+The relationship between yearly C&D waste tonnes and average Economic_Growth was moderately negative (r = -0.45), but the relationship was not statistically significant (p = 0.091). Therefore, the available economic growth measure does not provide strong evidence that annual economic growth directly explains the increase in C&D waste tonnes.
+
+
+
+```{r}
+# ============================================================
+# Contextualise trend against external factors
+# ============================================================
+
+# National Waste Report reference: ~19.0 million tonnes of C&D waste nationally
+# in 2008-09 (Construction and Demolition Waste Status Report, DCCEEW 2011)
+# vs. our filtered/cleaned dataset subset for 2009: 
+cd_yearly_trend %>% filter(Year_numeric == 2009)
+
+# National Waste Report reference: 27 million tonnes in 2019-20
+# vs. our dataset for 2019/2020:
+cd_yearly_trend %>% filter(Year_numeric %in% c(2019, 2020))
+```
+
+## Comment:
+The trend was also compared with figures from the National Waste Report. The report estimated approximately 19 million tonnes of C&D waste nationally in 2008–09(DCCEEW, Construction and Demolition Waste Status Report, 2011: https://www.dcceew.gov.au/environment/protection/waste/publications/construction-and-demolition-waste-status-report), compared with 5.79 million tonnes in the cleaned dataset for 2009. For 2019–20, the report estimated approximately 27 million tonnes, while the dataset records 24.02 million tonnes in 2019 and 25.31 million tonnes in 2020. The difference in earlier years may reflect differences in coverage, definitions, and reporting methods rather than a direct contradiction between the datasets.
+
+
+## Conclusion:
+This analysis of the National Waste Report 2022 dataset identified and addressed a range of data quality issues: inconsistent category labels, a corrupted tonnage value, missing values, and duplicate identifiers before proceeding to substantive analysis. Key findings relevant to investment decisions include:
+
+- Waste sources vary by category, with Biosolids and Ash entirely from C&I sources and Glass mainly from MSW.
+
+- Hazardous wastes and Organics have the lowest average Impact Scores, with Fate appearing more influential than waste volume or economic growth.
+
+- Bricks, concrete and pavers had the highest recycled volume and largest absolute increase from 2006–2020.
+
+- Tyre disposal volumes and large-scale events were highest in NSW, Victoria, and Queensland, highlighting areas for potential processing investment.
+
+Overall, C&D waste shows a strong upward trend in fig 7 from 2013 to 2020, while Economic_Growth alone does not provide a statistically significant explanation for this increase. The comparison with national waste estimates supports the general scale and direction of the trend, but differences in dataset scope and reporting should be considered. The large fluctuations in the earlier years also suggest that changes in data coverage or reporting practices may have contributed to the observed trend.
+
